@@ -70,6 +70,12 @@ export default function LoginPage() {
         return;
       }
 
+      // Block terminated teams from logging in
+      if (data.terminated) {
+        setErrorMessage("ACCESS REVOKED — Your session has been permanently terminated by the Controller.");
+        return;
+      }
+
       setSuccessMessage("Identity verified. Entering protocol...");
       const teamData = data as {
         email?: string | null;

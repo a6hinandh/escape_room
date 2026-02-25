@@ -6,6 +6,8 @@ create table teams (
   email text unique,
   active boolean default false,
   terminated boolean default false,
+  deactivated boolean default false,
+  document_url text,
   session_start timestamptz,
   session_end timestamptz,
   attempts int default 0,

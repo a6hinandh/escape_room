@@ -50,3 +50,13 @@ alter table teams add column if not exists is_admin boolean default false;
 alter table teams replica identity full;
 alter table broadcast replica identity full;
 alter table submissions replica identity full;
+
+-- ============================================================
+-- v3 migrations — document assignment + deactivate status
+-- ============================================================
+
+-- 8. Add deactivated column (can still login, see after-time screen + leaderboard)
+alter table teams add column if not exists deactivated boolean default false;
+
+-- 9. Add document_url column for admin-assigned documents per team
+alter table teams add column if not exists document_url text;

@@ -3,7 +3,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -14,10 +13,13 @@ type TeamAdminRecord = {
   email: string | null;
   active: boolean | null;
   terminated: boolean | null;
+  deactivated: boolean | null;
+  document_url: string | null;
   session_start: string | null;
   session_end: string | null;
   attempts: number | null;
   completed: boolean | null;
+  completion_time: string | null;
   max_attempts: number | null;
   is_admin: boolean | null;
 };
@@ -50,7 +52,7 @@ const adminEmailSet = new Set(
 );
 
 const TEAM_COLS =
-  "id, team_id, email, active, terminated, session_start, session_end, attempts, completed, max_attempts, is_admin";
+  "id, team_id, email, active, terminated, deactivated, document_url, session_start, session_end, attempts, completed, completion_time, max_attempts, is_admin";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -72,14 +74,27 @@ function getSecondsLeft(sessionEnd: string | null): number {
   return Math.max(0, Math.floor((new Date(sessionEnd).getTime() - Date.now()) / 1000));
 }
 
-type Status = "Standby" | "Active" | "Survived" | "Terminated";
+type Status = "Standby" | "Active" | "Survived" | "Deactivated" | "Terminated";
 
 function deriveStatus(t: TeamAdminRecord): Status {
   if (t.completed) return "Survived";
   if (t.terminated) return "Terminated";
+  if (t.deactivated) return "Deactivated";
   if (!t.active) return "Standby";
-  if (t.session_end && new Date(t.session_end).getTime() <= Date.now()) return "Terminated";
+  if (t.session_end && new Date(t.session_end).getTime() <= Date.now()) return "Deactivated";
   return "Active";
+}
+
+function computeDuration(t: TeamAdminRecord): number | null {
+  if (!t.completed || !t.completion_time || !t.session_start) return null;
+  return new Date(t.completion_time).getTime() - new Date(t.session_start).getTime();
+}
+
+function formatDuration(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
 }
 
 function isAdminRow(t: TeamAdminRecord): boolean {
@@ -90,10 +105,11 @@ function isAdminRow(t: TeamAdminRecord): boolean {
 }
 
 const statusBadge: Record<Status, { bg: string; text: string; dot: string }> = {
-  Standby:    { bg: "bg-zinc-800/60",    text: "text-zinc-400",    dot: "bg-zinc-500" },
-  Active:     { bg: "bg-red-900/30",     text: "text-red-400",     dot: "bg-red-400" },
-  Survived:   { bg: "bg-emerald-900/30", text: "text-emerald-400", dot: "bg-emerald-400" },
-  Terminated: { bg: "bg-red-950/50",     text: "text-red-600",     dot: "bg-red-600" },
+  Standby:     { bg: "bg-zinc-800/60",    text: "text-zinc-400",    dot: "bg-zinc-500" },
+  Active:      { bg: "bg-red-900/30",     text: "text-red-400",     dot: "bg-red-400" },
+  Survived:    { bg: "bg-emerald-900/30", text: "text-emerald-400", dot: "bg-emerald-400" },
+  Deactivated: { bg: "bg-amber-900/30",   text: "text-amber-400",   dot: "bg-amber-500" },
+  Terminated:  { bg: "bg-red-950/50",     text: "text-red-600",     dot: "bg-red-600" },
 };
 
 /* ------------------------------------------------------------------ */
@@ -113,9 +129,12 @@ export default function AdminPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [tick, setTick] = useState(0);
   const [showLogs, setShowLogs] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [defaultDurationMin, setDefaultDurationMin] = useState(30);
   const [defaultMaxAttempts, setDefaultMaxAttempts] = useState(2);
+  const [selectedTeams, setSelectedTeams] = useState<Set<string>>(new Set());
+  const [docInputs, setDocInputs] = useState<Record<string, string>>({});
 
   const isConfigured = useMemo(() => Boolean(supabase), []);
 
@@ -257,11 +276,54 @@ export default function AdminPage() {
   const forceTerminate = async (t: TeamAdminRecord) => {
     if (!supabase) return;
     const { error } = await supabase.from("teams").update({
-      active: false, terminated: true,
+      active: false, terminated: true, deactivated: false,
       session_end: t.session_end ?? new Date().toISOString(),
     }).eq("id", t.id);
     if (error) { showToast("Failed to terminate team.", "error"); return; }
-    showToast(`Team ${t.team_id} terminated.`);
+    showToast(`Team ${t.team_id} terminated — logged out and locked.`);
+  };
+
+  const deactivateTeam = async (t: TeamAdminRecord) => {
+    if (!supabase) return;
+    const { error } = await supabase.from("teams").update({
+      active: false, deactivated: true, terminated: false,
+      session_end: t.session_end ?? new Date().toISOString(),
+    }).eq("id", t.id);
+    if (error) { showToast("Failed to deactivate team.", "error"); return; }
+    showToast(`Team ${t.team_id} deactivated — can still view results.`);
+  };
+
+  const assignDocuments = async () => {
+    if (!supabase) return;
+    const entries = Array.from(selectedTeams).filter((id) => docInputs[id]?.trim());
+    if (entries.length === 0) { showToast("Select teams and enter document URLs.", "error"); return; }
+    setIsSubmitting(true);
+    try {
+      let success = 0;
+      for (const id of entries) {
+        const { error } = await supabase.from("teams").update({ document_url: docInputs[id].trim() }).eq("id", id);
+        if (!error) success++;
+      }
+      showToast(`Documents assigned to ${success} team(s).`);
+      setSelectedTeams(new Set());
+      setDocInputs({});
+    } finally { setIsSubmitting(false); }
+  };
+
+  const toggleTeamSelect = (id: string) => {
+    setSelectedTeams((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAllTeams = () => {
+    if (selectedTeams.size === teams.length) {
+      setSelectedTeams(new Set());
+    } else {
+      setSelectedTeams(new Set(teams.map((t) => t.id)));
+    }
   };
 
   const saveFinalKey = async (e: FormEvent<HTMLFormElement>) => {
@@ -347,15 +409,9 @@ export default function AdminPage() {
             Control Room
           </h1>
           <p className="mt-1 text-xs text-zinc-500">
-            Manage teams · Control sessions · Broadcast commands ·{" "}
+            Manage teams · Control sessions · Assign documents · Broadcast commands ·{" "}
             <span className="text-emerald-600">Live updates enabled</span>
           </p>
-          <Link
-            href="/leaderboard"
-            className="mt-3 inline-block text-xs font-bold uppercase tracking-wider text-red-400 underline underline-offset-4 hover:text-red-300"
-          >
-            View Leaderboard →
-          </Link>
         </section>
 
         {/* ---- Session Defaults ---- */}
@@ -444,6 +500,117 @@ export default function AdminPage() {
           </form>
         </section>
 
+        {/* ---- Document Assignment ---- */}
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
+          <h2 className="text-sm font-bold uppercase tracking-widest text-red-500">
+            Assign Documents
+          </h2>
+          <p className="mt-1 mb-4 text-xs text-zinc-500">
+            Select teams and enter document URLs/links. Click &ldquo;Assign&rdquo; to send each team their document.
+          </p>
+          <div className="mb-3 flex items-center gap-3">
+            <button type="button" onClick={selectAllTeams}
+              className="text-[10px] font-bold uppercase tracking-wider text-red-400 underline underline-offset-4 hover:text-red-300">
+              {selectedTeams.size === teams.length ? "Deselect All" : "Select All"}
+            </button>
+            <span className="text-[10px] text-zinc-600">{selectedTeams.size} selected</span>
+          </div>
+          <div className="max-h-64 overflow-y-auto rounded-xl border border-zinc-800 bg-black">
+            {teams.map((t) => (
+              <div key={t.id}
+                className={`flex items-center gap-3 border-b border-zinc-800/60 px-3 py-2.5 ${selectedTeams.has(t.id) ? "bg-red-950/20" : ""}`}>
+                <input type="checkbox" checked={selectedTeams.has(t.id)}
+                  onChange={() => toggleTeamSelect(t.id)}
+                  className="h-4 w-4 rounded border-zinc-600 bg-zinc-900 accent-red-600" />
+                <span className="min-w-[80px] text-sm font-bold text-white">{t.team_id ?? "—"}</span>
+                <input type="text"
+                  value={docInputs[t.id] ?? t.document_url ?? ""}
+                  onChange={(e) => setDocInputs((p) => ({ ...p, [t.id]: e.target.value }))}
+                  placeholder="https://docs.google.com/..."
+                  className="flex-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs text-white outline-none placeholder:text-zinc-700 focus:border-red-600" />
+                {t.document_url && (
+                  <span className="text-[9px] font-bold uppercase text-emerald-500">Assigned</span>
+                )}
+              </div>
+            ))}
+            {teams.length === 0 && (
+              <p className="px-3 py-4 text-center text-xs text-zinc-600">No teams registered.</p>
+            )}
+          </div>
+          <button type="button" onClick={assignDocuments} disabled={isSubmitting || selectedTeams.size === 0}
+            className={`${btnRed} mt-3 w-full sm:w-auto`}>
+            {isSubmitting ? "Assigning..." : `Assign Documents (${selectedTeams.size})`}
+          </button>
+        </section>
+
+        {/* ---- Leaderboard (Admin View) ---- */}
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-bold uppercase tracking-widest text-red-500">
+              Leaderboard
+            </h2>
+            <button type="button"
+              onClick={() => setShowLeaderboard((v) => !v)}
+              className="text-xs font-bold uppercase tracking-wider text-red-400 underline underline-offset-4 hover:text-red-300">
+              {showLeaderboard ? "Hide" : "Show"}
+            </button>
+          </div>
+          {showLeaderboard && (() => {
+            const survived = teams
+              .filter((t) => t.completed)
+              .map((t) => ({ ...t, duration: computeDuration(t) }))
+              .sort((a, b) => (a.duration ?? Infinity) - (b.duration ?? Infinity));
+            const rest = teams
+              .filter((t) => !t.completed)
+              .sort((a, b) => {
+                const sa = deriveStatus(a);
+                const sb = deriveStatus(b);
+                const p: Record<Status, number> = { Survived: 0, Active: 1, Standby: 2, Deactivated: 3, Terminated: 4 };
+                return p[sa] - p[sb];
+              });
+            const sorted = [...survived, ...rest];
+            return (
+              <div className="mt-4 max-h-80 overflow-auto">
+                <table className="w-full min-w-[500px] border-collapse text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-zinc-800 text-zinc-500">
+                      <th className="px-2 py-2 font-medium">Rank</th>
+                      <th className="px-2 py-2 font-medium">Team</th>
+                      <th className="px-2 py-2 font-medium">Status</th>
+                      <th className="px-2 py-2 font-medium">Duration</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sorted.map((t, i) => {
+                      const status = deriveStatus(t);
+                      const badge = statusBadge[status];
+                      const dur = computeDuration(t);
+                      return (
+                        <tr key={t.id} className="border-b border-zinc-800/60">
+                          <td className="px-2 py-2 font-mono text-zinc-400">{String(i + 1).padStart(2, "0")}</td>
+                          <td className="px-2 py-2 font-bold text-white">{t.team_id ?? "—"}</td>
+                          <td className="px-2 py-2">
+                            <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${badge.bg} ${badge.text}`}>
+                              <span className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${badge.dot}`} />
+                              {status}
+                            </span>
+                          </td>
+                          <td className={`px-2 py-2 font-mono ${t.completed ? "text-emerald-400" : "text-zinc-600"}`}>
+                            {dur !== null ? formatDuration(dur) : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {sorted.length === 0 && (
+                      <tr><td colSpan={4} className="px-2 py-4 text-center text-zinc-600">No teams yet.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
+        </section>
+
         {/* ---- Submission Logs ---- */}
         <section className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
           <div className="flex items-center justify-between">
@@ -516,6 +683,7 @@ export default function AdminPage() {
                     <th className="px-3 py-2">Team</th>
                     <th className="px-3 py-2">Email</th>
                     <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Doc</th>
                     <th className="px-3 py-2">Attempts</th>
                     <th className="px-3 py-2">Countdown</th>
                     <th className="px-3 py-2">Actions</th>
@@ -539,6 +707,16 @@ export default function AdminPage() {
                             <span className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${badge.dot} ${status === "Active" ? "animate-pulse" : ""}`} />
                             {status}
                           </span>
+                        </td>
+                        <td className="px-3 py-3">
+                          {t.document_url ? (
+                            <a href={t.document_url} target="_blank" rel="noopener noreferrer"
+                              className="text-[10px] font-bold uppercase text-emerald-400 underline underline-offset-2 hover:text-emerald-300">
+                              View
+                            </a>
+                          ) : (
+                            <span className="text-[10px] text-zinc-600">None</span>
+                          )}
                         </td>
                         <td className="px-3 py-3 text-zinc-300 tabular-nums">{t.attempts ?? 0} / {maxAtt}</td>
                         <td className={`px-3 py-3 font-mono font-bold tabular-nums ${isWarning ? "animate-pulse text-orange-400" : isEnded && status === "Active" ? "text-red-600" : isEnded ? "text-zinc-600" : "text-white"}`}>
@@ -568,6 +746,12 @@ export default function AdminPage() {
                               </button>
                             )}
                             {status !== "Survived" && status !== "Terminated" && (
+                              <button type="button" onClick={() => deactivateTeam(t)}
+                                className="rounded-lg border border-amber-700 bg-amber-900/40 px-2.5 py-1 text-[10px] font-bold uppercase text-amber-300 hover:bg-amber-800/50">
+                                Deactivate
+                              </button>
+                            )}
+                            {status !== "Survived" && status !== "Terminated" && (
                               <button type="button" onClick={() => forceTerminate(t)}
                                 className="rounded-lg border border-red-800 bg-red-950/60 px-2.5 py-1 text-[10px] font-bold uppercase text-red-500 hover:bg-red-900/60">
                                 Terminate
@@ -583,7 +767,7 @@ export default function AdminPage() {
                     );
                   })}
                   {teams.length === 0 && (
-                    <tr><td colSpan={6} className="px-3 py-6 text-center text-zinc-600">No participant teams registered.</td></tr>
+                    <tr><td colSpan={7} className="px-3 py-6 text-center text-zinc-600">No participant teams registered.</td></tr>
                   )}
                 </tbody>
               </table>

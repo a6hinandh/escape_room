@@ -10,9 +10,11 @@ type TeamLeaderboardRow = {
   id: string;
   team_id: string | null;
   completion_time: string | null;
+  session_start: string | null;
   completed: boolean | null;
   active: boolean | null;
   terminated: boolean | null;
+  deactivated: boolean | null;
   session_end: string | null;
   is_admin: boolean | null;
 };
@@ -28,33 +30,47 @@ const supabase =
     : null;
 
 const COLS =
-  "id, team_id, completion_time, completed, active, terminated, session_end, is_admin";
+  "id, team_id, completion_time, session_start, completed, active, terminated, deactivated, session_end, is_admin";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
-type Status = "Survived" | "Active" | "Terminated" | "Standby";
+type Status = "Survived" | "Active" | "Deactivated" | "Terminated" | "Standby";
 
 function deriveStatus(t: TeamLeaderboardRow): Status {
   if (t.completed) return "Survived";
   if (t.terminated) return "Terminated";
+  if (t.deactivated) return "Deactivated";
   if (!t.active) return "Standby";
-  if (t.session_end && new Date(t.session_end).getTime() <= Date.now()) return "Terminated";
+  if (t.session_end && new Date(t.session_end).getTime() <= Date.now()) return "Deactivated";
   return "Active";
+}
+
+function computeDuration(t: TeamLeaderboardRow): number | null {
+  if (!t.completed || !t.completion_time || !t.session_start) return null;
+  return new Date(t.completion_time).getTime() - new Date(t.session_start).getTime();
+}
+
+function formatDuration(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
 }
 
 function sortTeams(list: TeamLeaderboardRow[]): TeamLeaderboardRow[] {
   const priority: Record<Status, number> = {
-    Survived: 0, Active: 1, Standby: 2, Terminated: 3,
+    Survived: 0, Active: 1, Standby: 2, Deactivated: 3, Terminated: 4,
   };
   return [...list].sort((a, b) => {
     const sa = deriveStatus(a);
     const sb = deriveStatus(b);
     if (priority[sa] !== priority[sb]) return priority[sa] - priority[sb];
+    // Sort survived teams by shortest duration (not earliest time)
     if (sa === "Survived" && sb === "Survived") {
-      const ta = a.completion_time ? new Date(a.completion_time).getTime() : Infinity;
-      const tb = b.completion_time ? new Date(b.completion_time).getTime() : Infinity;
-      return ta - tb;
+      const da = computeDuration(a) ?? Infinity;
+      const db = computeDuration(b) ?? Infinity;
+      return da - db;
     }
     return 0;
   });
@@ -70,8 +86,7 @@ function formatTime(value: string | null): string {
 const STATUS_STYLES: Record<Status, { color: string; symbol: string; label: string }> = {
   Survived: { color: "var(--teal, #00c4a0)", symbol: "◎", label: "Survived" },
   Active: { color: "var(--pink, #ff2d78)", symbol: "△", label: "Active" },
-  Standby: { color: "#333", symbol: "○", label: "Standby" },
-  Terminated: { color: "#ff4040", symbol: "■", label: "Terminated" },
+  Standby: { color: "#333", symbol: "○", label: "Standby" },  Deactivated: { color: "#f59e0b", symbol: "\u25A1", label: "Deactivated" },  Terminated: { color: "#ff4040", symbol: "■", label: "Terminated" },
 };
 
 /* ------------------------------------------------------------------ */
@@ -116,7 +131,10 @@ export default function LeaderboardPage() {
 
   const survivedCount = sorted.filter(t => deriveStatus(t) === "Survived").length;
   const activeCount = sorted.filter(t => deriveStatus(t) === "Active").length;
-  const terminatedCount = sorted.filter(t => deriveStatus(t) === "Terminated").length;
+  const eliminatedCount = sorted.filter(t => {
+    const s = deriveStatus(t);
+    return s === "Terminated" || s === "Deactivated";
+  }).length;
 
   return (
     <div style={{ minHeight: "100vh", background: "#050505", color: "#fff" }}>
@@ -186,7 +204,7 @@ export default function LeaderboardPage() {
           {[
             { label: "Survived", count: survivedCount, color: "var(--teal, #00c4a0)" },
             { label: "Active", count: activeCount, color: "var(--pink, #ff2d78)" },
-            { label: "Terminated", count: terminatedCount, color: "#ff4040" },
+            { label: "Eliminated", count: eliminatedCount, color: "#ff4040" },
           ].map(({ label, count, color }) => (
             <div key={label} className="card" style={{ padding: "14px 16px", textAlign: "center" }}>
               <p style={{
@@ -251,7 +269,7 @@ export default function LeaderboardPage() {
                     <th style={{ width: "48px" }}>Rank</th>
                     <th>Team ID</th>
                     <th>Status</th>
-                    <th>Completion</th>
+                    <th>Duration</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -259,6 +277,7 @@ export default function LeaderboardPage() {
                     const status = deriveStatus(t);
                     const style = STATUS_STYLES[status];
                     const isFirst = i === 0 && status === "Survived";
+                    const dur = computeDuration(t);
 
                     return (
                       <tr
@@ -307,7 +326,7 @@ export default function LeaderboardPage() {
                             fontSize: "12px",
                             color: status === "Survived" ? "var(--teal, #00c4a0)" : "#444",
                           }}>
-                            {formatTime(t.completion_time)}
+                            {dur !== null ? formatDuration(dur) : "—"}
                           </span>
                         </td>
                       </tr>

@@ -230,19 +230,6 @@ export default function Home() {
           }}
         >
           <Link
-            href="/leaderboard"
-            className="footer-nav-link"
-            style={{
-              fontFamily: "var(--font-mono, monospace)",
-              fontSize: "11px",
-              letterSpacing: "0.15em",
-              textTransform: "uppercase",
-              textDecoration: "none",
-            }}
-          >
-            ◎ Leaderboard
-          </Link>
-          <Link
             href="/login"
             className="footer-nav-link"
             style={{

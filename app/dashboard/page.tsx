@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -13,10 +14,13 @@ type TeamRecord = {
   email: string | null;
   active: boolean | null;
   terminated: boolean | null;
+  deactivated: boolean | null;
+  document_url: string | null;
   session_start: string | null;
   session_end: string | null;
   attempts: number | null;
   completed: boolean | null;
+  completion_time: string | null;
   max_attempts: number | null;
 };
 
@@ -32,7 +36,7 @@ const supabase =
     : null;
 
 const TEAM_COLS =
-  "id, team_id, email, active, terminated, session_start, session_end, attempts, completed, max_attempts";
+  "id, team_id, email, active, terminated, deactivated, document_url, session_start, session_end, attempts, completed, completion_time, max_attempts";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -53,13 +57,14 @@ function getSecondsLeft(sessionEnd: string | null): number {
   return Math.max(0, Math.floor((new Date(sessionEnd).getTime() - Date.now()) / 1000));
 }
 
-type Status = "Standby" | "Active" | "Survived" | "Terminated";
+type Status = "Standby" | "Active" | "Survived" | "Deactivated" | "Terminated";
 
 function deriveStatus(t: TeamRecord): Status {
   if (t.completed) return "Survived";
   if (t.terminated) return "Terminated";
+  if (t.deactivated) return "Deactivated";
   if (!t.active) return "Standby";
-  if (t.session_end && new Date(t.session_end).getTime() <= Date.now()) return "Terminated";
+  if (t.session_end && new Date(t.session_end).getTime() <= Date.now()) return "Deactivated";
   return "Active";
 }
 
@@ -176,6 +181,16 @@ export default function DashboardPage() {
   const isSessionOver = Boolean(team?.session_end) && secondsLeft <= 0;
   const isWarning = secondsLeft > 0 && secondsLeft <= 300;
   const canSubmit = status === "Active" && !isLocked && !isSubmitting;
+
+  /* If terminated by admin, force logout */
+  useEffect(() => {
+    if (status === "Terminated") {
+      localStorage.removeItem("teamEmail");
+      localStorage.removeItem("teamId");
+      localStorage.removeItem("role");
+      router.replace("/login");
+    }
+  }, [status, router]);
 
   /* ---------- submit final key ---------- */
   const submitFinalKey = async (e: FormEvent<HTMLFormElement>) => {
@@ -354,10 +369,262 @@ export default function DashboardPage() {
     );
   }
 
+  /* ---------- POST-SESSION SCREEN (Survived / Deactivated / Session Over) ---------- */
+  if (status === "Survived" || status === "Deactivated" || (status !== "Active" && isSessionOver) || isLocked) {
+    const survived = status === "Survived";
+    return (
+      <div style={{
+        minHeight: "100vh",
+        background: "#050505",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        textAlign: "center",
+        padding: "24px",
+        position: "relative",
+        overflow: "hidden",
+      }}>
+        {/* Decorative rotating circles */}
+        <div aria-hidden="true" style={{
+          position: "absolute",
+          top: "50%", left: "50%",
+          transform: "translate(-50%, -50%)",
+          width: "600px", height: "600px",
+          borderRadius: "50%",
+          border: `1px solid ${survived ? "rgba(0,196,160,0.08)" : "rgba(255,45,120,0.06)"}`,
+          animation: "geo-rotate 40s linear infinite",
+          pointerEvents: "none",
+        }} />
+        <div aria-hidden="true" style={{
+          position: "absolute",
+          top: "50%", left: "50%",
+          transform: "translate(-50%, -50%) rotate(45deg)",
+          width: "420px", height: "420px",
+          border: `1px solid ${survived ? "rgba(0,196,160,0.05)" : "rgba(255,45,120,0.04)"}`,
+          animation: "geo-rotate 25s linear infinite reverse",
+          pointerEvents: "none",
+        }} />
+        <div aria-hidden="true" style={{
+          position: "absolute",
+          top: "50%", left: "50%",
+          transform: "translate(-50%, -50%)",
+          width: "240px", height: "240px",
+          borderRadius: "50%",
+          border: `1px solid ${survived ? "rgba(0,196,160,0.1)" : "rgba(255,45,120,0.07)"}`,
+          animation: "geo-rotate 15s linear infinite",
+          pointerEvents: "none",
+        }} />
+
+        {/* Giant geometric symbol cluster */}
+        <div className="animate-scale-in" style={{
+          position: "relative",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: "24px",
+          marginBottom: "32px",
+          zIndex: 1,
+        }}>
+          {/* Large circle with inner shapes */}
+          <div style={{
+            width: "120px", height: "120px",
+            borderRadius: "50%",
+            border: `3px solid ${survived ? "rgba(0,196,160,0.6)" : "rgba(255,45,120,0.5)"}`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            position: "relative",
+            boxShadow: survived
+              ? "0 0 60px rgba(0,196,160,0.2), inset 0 0 30px rgba(0,196,160,0.05)"
+              : "0 0 60px rgba(255,45,120,0.2), inset 0 0 30px rgba(255,45,120,0.05)",
+            animation: survived ? "" : "pulse-pink 3s ease-in-out infinite",
+          }}>
+            {survived ? (
+              <div style={{
+                width: "0", height: "0",
+                borderLeft: "22px solid transparent",
+                borderRight: "22px solid transparent",
+                borderBottom: "38px solid rgba(0,196,160,0.8)",
+              }} />
+            ) : (
+              <div style={{
+                width: "36px", height: "36px",
+                border: "3px solid rgba(255,45,120,0.7)",
+              }} />
+            )}
+          </div>
+
+          {/* Three symbols row */}
+          <div style={{ display: "flex", gap: "20px", alignItems: "center" }}>
+            <span style={{
+              width: "20px", height: "20px",
+              borderRadius: "50%",
+              border: `2px solid ${survived ? "rgba(0,196,160,0.5)" : "rgba(255,45,120,0.4)"}`,
+              display: "inline-block",
+            }} />
+            <span style={{
+              width: "0", height: "0",
+              borderLeft: "12px solid transparent",
+              borderRight: "12px solid transparent",
+              borderBottom: `20px solid ${survived ? "rgba(0,196,160,0.5)" : "rgba(255,45,120,0.4)"}`,
+              display: "inline-block",
+            }} />
+            <span style={{
+              width: "18px", height: "18px",
+              border: `2px solid ${survived ? "rgba(0,196,160,0.5)" : "rgba(255,45,120,0.4)"}`,
+              display: "inline-block",
+            }} />
+          </div>
+        </div>
+
+        {/* Protocol label */}
+        <p className="animate-slide-up" style={{
+          fontFamily: "var(--font-mono, monospace)",
+          fontSize: "10px",
+          color: survived ? "var(--teal, #00c4a0)" : "#ff2d78",
+          letterSpacing: "0.35em",
+          textTransform: "uppercase",
+          marginBottom: "12px",
+          zIndex: 1,
+        }}>
+          {survived ? "Survival Confirmed" : "Session Complete"}
+        </p>
+
+        {/* Big heading */}
+        <h1 className="animate-slide-up" style={{
+          fontFamily: "var(--font-bebas, 'Bebas Neue', sans-serif)",
+          fontSize: "clamp(3.5rem, 10vw, 7rem)",
+          letterSpacing: "0.06em",
+          lineHeight: 0.95,
+          color: survived ? "var(--teal, #00c4a0)" : "#fff",
+          textShadow: survived
+            ? "0 0 40px rgba(0,196,160,0.4)"
+            : "0 0 40px rgba(255,45,120,0.2)",
+          marginBottom: "8px",
+          zIndex: 1,
+        }}>
+          {survived ? "SURVIVED" : "ELIMINATED"}
+        </h1>
+
+        {/* Team ID */}
+        <p className="animate-slide-up-delay-1" style={{
+          fontFamily: "var(--font-mono, monospace)",
+          fontSize: "12px",
+          color: "#555",
+          letterSpacing: "0.2em",
+          marginBottom: "36px",
+          zIndex: 1,
+        }}>
+          TEAM {team?.team_id ?? "—"}
+        </p>
+
+        {/* View Leaderboard button */}
+        <Link
+          href="/leaderboard"
+          className="animate-slide-up-delay-2 btn-primary"
+          style={{
+            fontFamily: "var(--font-mono, monospace)",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "10px",
+            fontSize: "13px",
+            zIndex: 1,
+            background: survived ? "var(--teal, #00c4a0)" : undefined,
+          }}
+        >
+          <span style={{
+            width: "10px", height: "10px",
+            borderRadius: "50%",
+            border: "1.5px solid currentColor",
+            display: "inline-block",
+          }} />
+          View Leaderboard
+        </Link>
+
+        {/* Decorative line */}
+        <div className="animate-slide-up-delay-3" style={{
+          marginTop: "40px",
+          width: "60px",
+          height: "1px",
+          background: survived
+            ? "linear-gradient(90deg, transparent, rgba(0,196,160,0.4), transparent)"
+            : "linear-gradient(90deg, transparent, rgba(255,45,120,0.3), transparent)",
+          zIndex: 1,
+        }} />
+
+        <p className="animate-slide-up-delay-3" style={{
+          marginTop: "12px",
+          fontFamily: "var(--font-mono, monospace)",
+          fontSize: "9px",
+          color: "#222",
+          letterSpacing: "0.25em",
+          textTransform: "uppercase",
+          zIndex: 1,
+        }}>
+          The Survival Room — Protocol Complete
+        </p>
+
+        {/* Broadcast overlay still works */}
+        {popupMessage && (
+          <div className="animate-overlay-in" style={{
+            position: "fixed", inset: 0, zIndex: 50,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: "rgba(0,0,0,0.92)", backdropFilter: "blur(12px)", padding: "24px",
+          }}>
+            <div className="animate-modal-in card" style={{
+              maxWidth: "440px", width: "100%", padding: "32px 28px", textAlign: "center",
+              border: "1px solid rgba(255,45,120,0.5)",
+              boxShadow: "0 0 80px rgba(255,45,120,0.15), 0 40px 80px rgba(0,0,0,0.8)",
+            }}>
+              <p style={{
+                fontFamily: "var(--font-mono, monospace)", fontSize: "9px", color: "#ff2d78",
+                letterSpacing: "0.35em", textTransform: "uppercase", marginBottom: "14px",
+              }}>Live Command</p>
+              <h2 style={{
+                fontFamily: "var(--font-bebas, 'Bebas Neue', sans-serif)",
+                fontSize: "clamp(1.8rem, 5vw, 2.8rem)", letterSpacing: "0.05em",
+                color: "#fff", lineHeight: 1.1, marginBottom: "24px",
+              }}>{popupMessage}</h2>
+              <button type="button" onClick={() => setPopupMessage("")}
+                className="btn-primary" style={{ fontFamily: "var(--font-mono, monospace)", width: "100%" }}>
+                Acknowledge
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /* ---------- TERMINATED screen (will redirect, but show briefly) ---------- */
+  if (status === "Terminated") {
+    return (
+      <div style={{
+        minHeight: "100vh",
+        background: "#050505",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        textAlign: "center",
+        padding: "24px",
+      }}>
+        <p style={{
+          fontFamily: "var(--font-mono, monospace)",
+          fontSize: "11px",
+          color: "#ff4444",
+          letterSpacing: "0.2em",
+          textTransform: "uppercase",
+        }}>
+          SESSION TERMINATED — REDIRECTING...
+        </p>
+      </div>
+    );
+  }
+
   /* ---------- Status colors ---------- */
   const statusConfig = {
     Survived: { color: "var(--teal, #00c4a0)", label: "SURVIVED" },
     Terminated: { color: "#ff4444", label: "TERMINATED" },
+    Deactivated: { color: "#f59e0b", label: "DEACTIVATED" },
     Active: { color: "var(--pink, #ff2d78)", label: "ACTIVE" },
     Standby: { color: "#444", label: "STANDBY" },
   }[status];
@@ -535,30 +802,6 @@ export default function DashboardPage() {
             </p>
           )}
         </section>
-
-        {/* Terminated banner */}
-        {status === "Terminated" && (
-          <div
-            className="animate-slide-up animate-border-flash"
-            style={{
-              background: "rgba(255,60,60,0.04)",
-              border: "1px solid rgba(255,60,60,0.3)",
-              borderRadius: "12px",
-              padding: "16px",
-              textAlign: "center",
-            }}
-          >
-            <p style={{
-              fontFamily: "var(--font-mono, monospace)",
-              fontSize: "11px",
-              color: "#ff4444",
-              letterSpacing: "0.2em",
-              textTransform: "uppercase",
-            }}>
-              ■ SESSION TERMINATED — Elimination Confirmed
-            </p>
-          </div>
-        )}
 
         {/* Final Key Submission */}
         <section className="animate-slide-up-delay-3 card" style={{ padding: "24px" }}>
