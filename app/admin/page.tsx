@@ -134,7 +134,8 @@ export default function AdminPage() {
   const [defaultDurationMin, setDefaultDurationMin] = useState(30);
   const [defaultMaxAttempts, setDefaultMaxAttempts] = useState(2);
   const [selectedTeams, setSelectedTeams] = useState<Set<string>>(new Set());
-  const [docInputs, setDocInputs] = useState<Record<string, string>>({});
+  const [docFiles, setDocFiles] = useState<Record<string, File>>({});
+  const [uploadProgress, setUploadProgress] = useState<Record<string, string>>({});
 
   const isConfigured = useMemo(() => Boolean(supabase), []);
 
@@ -295,19 +296,63 @@ export default function AdminPage() {
 
   const assignDocuments = async () => {
     if (!supabase) return;
-    const entries = Array.from(selectedTeams).filter((id) => docInputs[id]?.trim());
-    if (entries.length === 0) { showToast("Select teams and enter document URLs.", "error"); return; }
+    const entries = Array.from(selectedTeams).filter((id) => docFiles[id]);
+    if (entries.length === 0) { showToast("Select teams and choose files to upload.", "error"); return; }
     setIsSubmitting(true);
     try {
       let success = 0;
       for (const id of entries) {
-        const { error } = await supabase.from("teams").update({ document_url: docInputs[id].trim() }).eq("id", id);
-        if (!error) success++;
+        const file = docFiles[id];
+        const team = teams.find((t) => t.id === id);
+        const safeName = (team?.team_id ?? id).replace(/[^a-zA-Z0-9_-]/g, "_");
+        const ext = file.name.split(".").pop() ?? "bin";
+        const storagePath = `${safeName}/${Date.now()}.${ext}`;
+
+        setUploadProgress((p) => ({ ...p, [id]: "Uploading..." }));
+
+        const { error: upErr } = await supabase.storage
+          .from("team-documents")
+          .upload(storagePath, file, { upsert: true });
+
+        if (upErr) {
+          setUploadProgress((p) => ({ ...p, [id]: "Failed" }));
+          showToast(`Upload failed for ${team?.team_id}: ${upErr.message}`, "error");
+          continue;
+        }
+
+        const { data: urlData } = supabase.storage
+          .from("team-documents")
+          .getPublicUrl(storagePath);
+
+        const publicUrl = urlData?.publicUrl ?? "";
+
+        const { error: dbErr } = await supabase
+          .from("teams")
+          .update({ document_url: publicUrl })
+          .eq("id", id);
+
+        if (dbErr) {
+          setUploadProgress((p) => ({ ...p, [id]: "DB error" }));
+          showToast(`DB update failed for ${team?.team_id}`, "error");
+          continue;
+        }
+
+        setUploadProgress((p) => ({ ...p, [id]: "Done" }));
+        success++;
       }
-      showToast(`Documents assigned to ${success} team(s).`);
+      showToast(`Documents uploaded & assigned to ${success} team(s).`);
       setSelectedTeams(new Set());
-      setDocInputs({});
+      setDocFiles({});
+      setTimeout(() => setUploadProgress({}), 3000);
     } finally { setIsSubmitting(false); }
+  };
+
+  const removeDocument = async (t: TeamAdminRecord) => {
+    if (!supabase) return;
+    if (!confirm(`Remove document from team ${t.team_id}?`)) return;
+    const { error } = await supabase.from("teams").update({ document_url: null }).eq("id", t.id);
+    if (error) { showToast("Failed to remove document.", "error"); return; }
+    showToast(`Document removed from ${t.team_id}.`);
   };
 
   const toggleTeamSelect = (id: string) => {
@@ -506,7 +551,7 @@ export default function AdminPage() {
             Assign Documents
           </h2>
           <p className="mt-1 mb-4 text-xs text-zinc-500">
-            Select teams and enter document URLs/links. Click &ldquo;Assign&rdquo; to send each team their document.
+            Select teams, choose a file for each, then click &ldquo;Upload & Assign&rdquo;. Files are uploaded to storage and linked to each team.
           </p>
           <div className="mb-3 flex items-center gap-3">
             <button type="button" onClick={selectAllTeams}
@@ -515,31 +560,68 @@ export default function AdminPage() {
             </button>
             <span className="text-[10px] text-zinc-600">{selectedTeams.size} selected</span>
           </div>
-          <div className="max-h-64 overflow-y-auto rounded-xl border border-zinc-800 bg-black">
+          <div className="max-h-80 overflow-y-auto rounded-xl border border-zinc-800 bg-black">
             {teams.map((t) => (
               <div key={t.id}
-                className={`flex items-center gap-3 border-b border-zinc-800/60 px-3 py-2.5 ${selectedTeams.has(t.id) ? "bg-red-950/20" : ""}`}>
+                className={`flex flex-wrap items-center gap-3 border-b border-zinc-800/60 px-3 py-3 ${selectedTeams.has(t.id) ? "bg-red-950/20" : ""}`}>
                 <input type="checkbox" checked={selectedTeams.has(t.id)}
                   onChange={() => toggleTeamSelect(t.id)}
                   className="h-4 w-4 rounded border-zinc-600 bg-zinc-900 accent-red-600" />
                 <span className="min-w-[80px] text-sm font-bold text-white">{t.team_id ?? "—"}</span>
-                <input type="text"
-                  value={docInputs[t.id] ?? t.document_url ?? ""}
-                  onChange={(e) => setDocInputs((p) => ({ ...p, [t.id]: e.target.value }))}
-                  placeholder="https://docs.google.com/..."
-                  className="flex-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs text-white outline-none placeholder:text-zinc-700 focus:border-red-600" />
-                {t.document_url && (
-                  <span className="text-[9px] font-bold uppercase text-emerald-500">Assigned</span>
-                )}
+
+                {/* File picker */}
+                <label className="flex-1 min-w-[180px]">
+                  <input type="file"
+                    accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.txt,.xlsx,.pptx,.zip"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) {
+                        setDocFiles((p) => ({ ...p, [t.id]: f }));
+                        if (!selectedTeams.has(t.id)) toggleTeamSelect(t.id);
+                      }
+                    }}
+                    className="block w-full text-xs text-zinc-400 file:mr-3 file:rounded-lg file:border file:border-zinc-700 file:bg-zinc-900 file:px-3 file:py-1.5 file:text-[10px] file:font-bold file:uppercase file:text-zinc-300 file:cursor-pointer hover:file:bg-zinc-800" />
+                  {docFiles[t.id] && (
+                    <span className="mt-1 block text-[10px] text-zinc-500 truncate">
+                      Selected: {docFiles[t.id].name} ({(docFiles[t.id].size / 1024).toFixed(0)} KB)
+                    </span>
+                  )}
+                </label>
+
+                {/* Status indicators */}
+                <div className="flex items-center gap-2 min-w-[70px] justify-end">
+                  {uploadProgress[t.id] && (
+                    <span className={`text-[9px] font-bold uppercase ${
+                      uploadProgress[t.id] === "Done" ? "text-emerald-500" :
+                      uploadProgress[t.id] === "Failed" || uploadProgress[t.id] === "DB error" ? "text-red-500" :
+                      "text-amber-400 animate-pulse"
+                    }`}>
+                      {uploadProgress[t.id]}
+                    </span>
+                  )}
+                  {t.document_url && !uploadProgress[t.id] && (
+                    <div className="flex items-center gap-1.5">
+                      <a href={t.document_url} target="_blank" rel="noopener noreferrer"
+                        className="text-[9px] font-bold uppercase text-emerald-400 underline underline-offset-2 hover:text-emerald-300">
+                        View
+                      </a>
+                      <button type="button" onClick={() => removeDocument(t)}
+                        className="text-[9px] font-bold uppercase text-red-500 hover:text-red-400">
+                        ✕
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             ))}
             {teams.length === 0 && (
               <p className="px-3 py-4 text-center text-xs text-zinc-600">No teams registered.</p>
             )}
           </div>
-          <button type="button" onClick={assignDocuments} disabled={isSubmitting || selectedTeams.size === 0}
+          <button type="button" onClick={assignDocuments}
+            disabled={isSubmitting || Object.keys(docFiles).filter((id) => selectedTeams.has(id)).length === 0}
             className={`${btnRed} mt-3 w-full sm:w-auto`}>
-            {isSubmitting ? "Assigning..." : `Assign Documents (${selectedTeams.size})`}
+            {isSubmitting ? "Uploading..." : `Upload & Assign (${Object.keys(docFiles).filter((id) => selectedTeams.has(id)).length})`}
           </button>
         </section>
 
@@ -710,10 +792,16 @@ export default function AdminPage() {
                         </td>
                         <td className="px-3 py-3">
                           {t.document_url ? (
-                            <a href={t.document_url} target="_blank" rel="noopener noreferrer"
-                              className="text-[10px] font-bold uppercase text-emerald-400 underline underline-offset-2 hover:text-emerald-300">
-                              View
-                            </a>
+                            <div className="flex items-center gap-1.5">
+                              <a href={t.document_url} target="_blank" rel="noopener noreferrer"
+                                className="text-[10px] font-bold uppercase text-emerald-400 underline underline-offset-2 hover:text-emerald-300">
+                                View
+                              </a>
+                              <button type="button" onClick={() => removeDocument(t)}
+                                className="text-[10px] font-bold uppercase text-red-500 hover:text-red-400">
+                                ✕
+                              </button>
+                            </div>
                           ) : (
                             <span className="text-[10px] text-zinc-600">None</span>
                           )}

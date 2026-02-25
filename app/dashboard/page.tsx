@@ -803,6 +803,98 @@ export default function DashboardPage() {
           )}
         </section>
 
+        {/* Assigned Document */}
+        {team?.document_url && (
+          <section className="animate-slide-up-delay-2 card" style={{ padding: "20px 24px" }}>
+            <div className="section-label" style={{ marginBottom: "14px" }}>
+              <span className="sg-square text-pink" />
+              Assigned Document
+            </div>
+            <div style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "12px",
+            }}>
+              {/* PDF / image inline preview */}
+              {/\.(pdf)$/i.test(team.document_url) ? (
+                <iframe
+                  src={team.document_url}
+                  title="Team Document"
+                  style={{
+                    width: "100%",
+                    height: "420px",
+                    border: "1px solid rgba(255,45,120,0.15)",
+                    borderRadius: "8px",
+                    background: "#0a0a0a",
+                  }}
+                />
+              ) : /\.(png|jpe?g|gif|webp)$/i.test(team.document_url) ? (
+                <img
+                  src={team.document_url}
+                  alt="Team Document"
+                  style={{
+                    width: "100%",
+                    maxHeight: "420px",
+                    objectFit: "contain",
+                    border: "1px solid rgba(255,45,120,0.15)",
+                    borderRadius: "8px",
+                    background: "#0a0a0a",
+                  }}
+                />
+              ) : (
+                <div style={{
+                  background: "rgba(255,45,120,0.03)",
+                  border: "1px solid rgba(255,45,120,0.15)",
+                  borderRadius: "8px",
+                  padding: "20px",
+                  textAlign: "center",
+                }}>
+                  <p style={{
+                    fontFamily: "var(--font-mono, monospace)",
+                    fontSize: "11px",
+                    color: "#555",
+                    letterSpacing: "0.1em",
+                    marginBottom: "4px",
+                  }}>
+                    Document assigned by Controller
+                  </p>
+                  <p style={{
+                    fontFamily: "var(--font-mono, monospace)",
+                    fontSize: "10px",
+                    color: "#333",
+                  }}>
+                    {team.document_url.split("/").pop()}
+                  </p>
+                </div>
+              )}
+              <a
+                href={team.document_url}
+                download
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-primary"
+                style={{
+                  fontFamily: "var(--font-mono, monospace)",
+                  textAlign: "center",
+                  textDecoration: "none",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "8px",
+                  fontSize: "12px",
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                Download Document
+              </a>
+            </div>
+          </section>
+        )}
+
         {/* Final Key Submission */}
         <section className="animate-slide-up-delay-3 card" style={{ padding: "24px" }}>
           <div className="section-label" style={{ marginBottom: "16px" }}>

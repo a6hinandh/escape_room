@@ -60,3 +60,20 @@ alter table teams add column if not exists deactivated boolean default false;
 
 -- 9. Add document_url column for admin-assigned documents per team
 alter table teams add column if not exists document_url text;
+
+-- 10. Create storage bucket for team documents
+--     Run this in the Supabase SQL Editor:
+insert into storage.buckets (id, name, public) values ('team-documents', 'team-documents', true)
+on conflict (id) do nothing;
+
+-- 11. Allow public read access to team-documents bucket
+create policy "public_read_team_documents" on storage.objects
+  for select using (bucket_id = 'team-documents');
+
+-- 12. Allow anon uploads to team-documents bucket
+create policy "anon_upload_team_documents" on storage.objects
+  for insert with check (bucket_id = 'team-documents');
+
+-- 13. Allow anon updates (upsert) to team-documents bucket
+create policy "anon_update_team_documents" on storage.objects
+  for update using (bucket_id = 'team-documents');
