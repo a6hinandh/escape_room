@@ -242,6 +242,20 @@ export default function Home() {
             △ Login
           </Link>
         </div>
+
+        <p
+          className="animate-slide-up-delay-4"
+          style={{
+            marginTop: "10px",
+            textAlign: "center",
+            fontFamily: "var(--font-mono, monospace)",
+            fontSize: "10px",
+            color: "#333",
+            letterSpacing: "0.12em",
+          }}
+        >
+          developed by a6hinandh
+        </p>
       </main>
     </div>
   );
