@@ -9,6 +9,8 @@ create table teams (
   deactivated boolean default false,
   document_url text,
   final_key text,
+  paused_remaining_seconds int,
+  paused_at timestamptz,
   session_start timestamptz,
   session_end timestamptz,
   attempts int default 0,

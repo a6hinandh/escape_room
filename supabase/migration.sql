@@ -86,14 +86,18 @@ alter table submissions replica identity full;
 -- v3 migrations — document assignment + deactivate status
 -- ============================================================
 
--- 8. Add deactivated column (can still login, see after-time screen + leaderboard)
+-- 8. Add deactivated column (used to pause a session from the control room)
 alter table teams add column if not exists deactivated boolean default false;
 
 -- 9. Add document_url column for admin-assigned documents per team
 alter table teams add column if not exists document_url text;
 
--- 9b. Add per-team final key (overrides global settings.final_key when present)
+-- 9b. Add per-team key (assigned by admin)
 alter table teams add column if not exists final_key text;
+
+-- 9c. Pause/resume support (Deactivate pauses the clock)
+alter table teams add column if not exists paused_remaining_seconds int;
+alter table teams add column if not exists paused_at timestamptz;
 
 -- 10. Create storage bucket for team documents
 --     Run this in the Supabase SQL Editor:

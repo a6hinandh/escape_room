@@ -17,6 +17,8 @@ type TeamAdminRecord = {
   deactivated: boolean | null;
   document_url: string | null;
   final_key: string | null;
+  paused_remaining_seconds: number | null;
+  paused_at: string | null;
   session_start: string | null;
   session_end: string | null;
   attempts: number | null;
@@ -54,7 +56,7 @@ const adminEmailSet = new Set(
 );
 
 const TEAM_COLS =
-  "id, team_id, email, active, terminated, deactivated, document_url, final_key, session_start, session_end, attempts, completed, completion_time, max_attempts, is_admin";
+  "id, team_id, email, active, terminated, deactivated, document_url, final_key, paused_remaining_seconds, paused_at, session_start, session_end, attempts, completed, completion_time, max_attempts, is_admin";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -74,6 +76,15 @@ function formatCountdown(sessionEnd: string | null): string {
 function getSecondsLeft(sessionEnd: string | null): number {
   if (!sessionEnd) return 0;
   return Math.max(0, Math.floor((new Date(sessionEnd).getTime() - Date.now()) / 1000));
+}
+
+function formatSecondsLeft(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  return [
+    String(Math.floor(s / 3600)).padStart(2, "0"),
+    String(Math.floor((s % 3600) / 60)).padStart(2, "0"),
+    String(s % 60).padStart(2, "0"),
+  ].join(":");
 }
 
 type Status = "Standby" | "Active" | "Survived" | "Deactivated" | "Terminated";
@@ -125,8 +136,6 @@ export default function AdminPage() {
   const [teamIdInput, setTeamIdInput] = useState("");
   const [emailInput, setEmailInput] = useState("");
   const [broadcastInput, setBroadcastInput] = useState("");
-  const [finalKeyInput, setFinalKeyInput] = useState("");
-  const [currentFinalKey, setCurrentFinalKey] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [tick, setTick] = useState(0);
@@ -137,6 +146,8 @@ export default function AdminPage() {
   const [defaultMaxAttempts, setDefaultMaxAttempts] = useState(2);
   const [isClearingLogs, setIsClearingLogs] = useState(false);
   const [teamFinalKeyInputs, setTeamFinalKeyInputs] = useState<Record<string, string>>({});
+  const [selectedKeyTeams, setSelectedKeyTeams] = useState<Set<string>>(new Set());
+  const [isAssigningKeys, setIsAssigningKeys] = useState(false);
   const [selectedTeams, setSelectedTeams] = useState<Set<string>>(new Set());
   const [docFiles, setDocFiles] = useState<Record<string, File>>({});
   const [uploadProgress, setUploadProgress] = useState<Record<string, string>>({});
@@ -173,15 +184,6 @@ export default function AdminPage() {
     });
   }, [showToast]);
 
-  const loadFinalKey = useCallback(async () => {
-    if (!supabase) return;
-    const { data, error } = await supabase
-      .from("settings").select("final_key").eq("id", 1).maybeSingle();
-    if (error) { showToast(`Failed to load final key: ${error.message}`, "error"); return; }
-    setCurrentFinalKey(data?.final_key ?? "");
-    setFinalKeyInput(data?.final_key ?? "");
-  }, [showToast]);
-
   const loadSubmissions = useCallback(async () => {
     if (!supabase) return;
     const { data, error } = await supabase
@@ -197,8 +199,8 @@ export default function AdminPage() {
     if (!isConfigured) { showToast("System configuration error.", "error"); setIsLoading(false); return; }
     const role = localStorage.getItem("role");
     if (role !== "admin") { router.replace("/login"); return; }
-    Promise.all([loadTeams(), loadFinalKey()]).then(() => setIsLoading(false));
-  }, [isConfigured, router, loadTeams, loadFinalKey, showToast]);
+    Promise.all([loadTeams()]).then(() => setIsLoading(false));
+  }, [isConfigured, router, loadTeams, showToast]);
 
   /* ---- realtime: teams table → reload on any change ---- */
   useEffect(() => {
@@ -261,9 +263,20 @@ export default function AdminPage() {
   const setTeamActive = async (t: TeamAdminRecord, active: boolean) => {
     if (!supabase) return;
     haptics.selection();
+    const resumeSeconds = t.paused_remaining_seconds;
+    const willResume = active && t.deactivated && typeof resumeSeconds === "number" && resumeSeconds > 0;
+    const sessionEnd = willResume ? new Date(Date.now() + resumeSeconds * 1000).toISOString() : undefined;
+
     const { error } = await supabase
       .from("teams")
-      .update({ active, terminated: active ? false : t.terminated })
+      .update({
+        active,
+        terminated: active ? false : t.terminated,
+        deactivated: active ? false : t.deactivated,
+        session_end: willResume ? sessionEnd : undefined,
+        paused_remaining_seconds: willResume ? null : t.paused_remaining_seconds,
+        paused_at: willResume ? null : t.paused_at,
+      })
       .eq("id", t.id);
     if (error) { showToast("Failed to update.", "error"); return; }
     showToast(active ? `Team ${t.team_id} activated.` : `Team ${t.team_id} set to Standby.`);
@@ -275,9 +288,11 @@ export default function AdminPage() {
     const start = new Date();
     const end = new Date(start.getTime() + defaultDurationMin * 60 * 1000);
     const { error } = await supabase.from("teams").update({
-      active: true, terminated: false,
+      active: true, terminated: false, deactivated: false,
       session_start: start.toISOString(),
       session_end: end.toISOString(),
+      paused_remaining_seconds: null,
+      paused_at: null,
       max_attempts: defaultMaxAttempts,
       attempts: 0,
     }).eq("id", t.id);
@@ -289,7 +304,7 @@ export default function AdminPage() {
     if (!supabase) return;
     haptics.warning();
     const { error } = await supabase.from("teams")
-      .update({ session_end: new Date().toISOString() }).eq("id", t.id);
+      .update({ session_end: new Date().toISOString(), paused_remaining_seconds: null, paused_at: null }).eq("id", t.id);
     if (error) { showToast("Failed to stop session.", "error"); return; }
     showToast(`Session stopped for ${t.team_id}.`);
   };
@@ -300,7 +315,9 @@ export default function AdminPage() {
     haptics.warning();
     const { error } = await supabase.from("teams").update({
       active: false, terminated: true, deactivated: false,
-      session_end: t.session_end ?? new Date().toISOString(),
+      session_end: new Date().toISOString(),
+      paused_remaining_seconds: null,
+      paused_at: null,
     }).eq("id", t.id);
     if (error) { showToast("Failed to terminate team.", "error"); return; }
     showToast(`Team ${t.team_id} terminated — logged out and locked.`);
@@ -309,12 +326,16 @@ export default function AdminPage() {
   const deactivateTeam = async (t: TeamAdminRecord) => {
     if (!supabase) return;
     haptics.warning();
+    const remaining = t.session_end ? getSecondsLeft(t.session_end) : 0;
     const { error } = await supabase.from("teams").update({
       active: false, deactivated: true, terminated: false,
-      session_end: t.session_end ?? new Date().toISOString(),
+      paused_remaining_seconds: remaining,
+      paused_at: new Date().toISOString(),
+      // Null out session_end so countdown stops (paused)
+      session_end: null,
     }).eq("id", t.id);
     if (error) { showToast("Failed to deactivate team.", "error"); return; }
-    showToast(`Team ${t.team_id} deactivated — can still view results.`);
+    showToast(`Team ${t.team_id} deactivated — clock paused.`);
   };
 
   const assignDocuments = async () => {
@@ -396,42 +417,50 @@ export default function AdminPage() {
     }
   };
 
-  const saveFinalKey = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!supabase) return;
-    haptics.tap();
-    const key = finalKeyInput.trim();
-    if (!key) { showToast("Enter a key.", "error"); return; }
-    const { data, error } = await supabase
-      .from("settings")
-      .upsert({ id: 1, final_key: key }, { onConflict: "id" })
-      .select("final_key")
-      .single();
-    if (error) {
-      showToast(`Failed to save final key: ${error.message}`, "error");
-      return;
-    }
-    const saved = data?.final_key ?? key;
-    setCurrentFinalKey(saved);
-    setFinalKeyInput(saved);
-    showToast("Final survival key saved.");
+  const toggleKeyTeamSelect = (id: string) => {
+    setSelectedKeyTeams((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   };
 
-  const saveTeamFinalKey = async (t: TeamAdminRecord) => {
+  const selectAllKeyTeams = () => {
+    if (selectedKeyTeams.size === teams.length) {
+      setSelectedKeyTeams(new Set());
+    } else {
+      setSelectedKeyTeams(new Set(teams.map((t) => t.id)));
+    }
+  };
+
+  const assignKeys = async () => {
     if (!supabase) return;
     haptics.tap();
-    const raw = teamFinalKeyInputs[t.id] ?? "";
-    const key = raw.trim();
-    if (!key) {
-      showToast(`Enter a key for ${t.team_id ?? "this team"}.`, "error");
+    const entries = Array.from(selectedKeyTeams)
+      .map((id) => ({ id, key: (teamFinalKeyInputs[id] ?? "").trim() }))
+      .filter((x) => x.key.length > 0);
+    if (entries.length === 0) {
+      showToast("Select teams and enter keys to assign.", "error");
       return;
     }
-    const { error } = await supabase.from("teams").update({ final_key: key }).eq("id", t.id);
-    if (error) {
-      showToast(`Failed to save team key: ${error.message}`, "error");
-      return;
+
+    setIsAssigningKeys(true);
+    try {
+      let success = 0;
+      for (const { id, key } of entries) {
+        const team = teams.find((t) => t.id === id);
+        const { error } = await supabase.from("teams").update({ final_key: key }).eq("id", id);
+        if (error) {
+          showToast(`Failed to assign key for ${team?.team_id ?? "team"}: ${error.message}`, "error");
+          continue;
+        }
+        success++;
+      }
+      showToast(`Keys assigned to ${success} team(s).`);
+      setSelectedKeyTeams(new Set());
+    } finally {
+      setIsAssigningKeys(false);
     }
-    showToast(`Final key saved for ${t.team_id ?? "team"}.`);
   };
 
   const clearSubmissionLogs = async () => {
@@ -590,23 +619,6 @@ export default function AdminPage() {
           </form>
         </section>
 
-        {/* ---- Final Survival Key ---- */}
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
-          <h2 className="text-sm font-bold uppercase tracking-widest text-red-500">
-            Final Survival Key
-          </h2>
-          {currentFinalKey && (
-            <p className="mt-2 text-xs text-zinc-500">
-              Current key: <span className="font-mono text-white">{currentFinalKey}</span>
-            </p>
-          )}
-          <form onSubmit={saveFinalKey} className="mt-3 flex flex-col gap-3 sm:flex-row">
-            <input type="text" value={finalKeyInput} onChange={(e) => setFinalKeyInput(e.target.value)}
-              placeholder="Set new key" className={inputClass} />
-            <button type="submit" className={btnRed}>Save Key</button>
-          </form>
-        </section>
-
         {/* ---- Broadcast ---- */}
         <section className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
           <h2 className="text-sm font-bold uppercase tracking-widest text-red-500">
@@ -699,6 +711,56 @@ export default function AdminPage() {
             disabled={isSubmitting || Object.keys(docFiles).filter((id) => selectedTeams.has(id)).length === 0}
             className={`${btnRed} mt-3 w-full sm:w-auto`}>
             {isSubmitting ? "Uploading..." : `Upload & Assign (${Object.keys(docFiles).filter((id) => selectedTeams.has(id)).length})`}
+          </button>
+        </section>
+
+        {/* ---- Key Assignment ---- */}
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
+          <h2 className="text-sm font-bold uppercase tracking-widest text-red-500">
+            Assign Keys
+          </h2>
+          <p className="mt-1 mb-4 text-xs text-zinc-500">
+            Select teams, enter a key for each, then click &ldquo;Assign Keys&rdquo;. These per-team keys are used for submissions.
+          </p>
+          <div className="mb-3 flex items-center gap-3">
+            <button type="button" onClick={selectAllKeyTeams}
+              className="text-[10px] font-bold uppercase tracking-wider text-red-400 underline underline-offset-4 hover:text-red-300">
+              {selectedKeyTeams.size === teams.length ? "Deselect All" : "Select All"}
+            </button>
+            <span className="text-[10px] text-zinc-600">{selectedKeyTeams.size} selected</span>
+          </div>
+          <div className="max-h-80 overflow-y-auto rounded-xl border border-zinc-800 bg-black">
+            {teams.map((t) => (
+              <div key={t.id}
+                className={`flex flex-wrap items-center gap-3 border-b border-zinc-800/60 px-3 py-3 ${selectedKeyTeams.has(t.id) ? "bg-red-950/20" : ""}`}>
+                <input type="checkbox" checked={selectedKeyTeams.has(t.id)}
+                  onChange={() => toggleKeyTeamSelect(t.id)}
+                  className="h-4 w-4 rounded border-zinc-600 bg-zinc-900 accent-red-600" />
+                <span className="min-w-[80px] text-sm font-bold text-white">{t.team_id ?? "—"}</span>
+                <input
+                  type="text"
+                  value={teamFinalKeyInputs[t.id] ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setTeamFinalKeyInputs((p) => ({ ...p, [t.id]: v }));
+                    if (!selectedKeyTeams.has(t.id)) toggleKeyTeamSelect(t.id);
+                  }}
+                  placeholder="Enter team key"
+                  className={inputClass}
+                />
+              </div>
+            ))}
+            {teams.length === 0 && (
+              <p className="px-3 py-4 text-center text-xs text-zinc-600">No teams registered.</p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={assignKeys}
+            disabled={isAssigningKeys || teams.length === 0}
+            className={`${btnRed} mt-3 w-full sm:w-auto`}
+          >
+            {isAssigningKeys ? "Assigning..." : "Assign Keys"}
           </button>
         </section>
 
@@ -855,7 +917,6 @@ export default function AdminPage() {
                     <th className="px-3 py-2">Email</th>
                     <th className="px-3 py-2">Status</th>
                     <th className="px-3 py-2">Doc</th>
-                    <th className="px-3 py-2">Key</th>
                     <th className="px-3 py-2">Attempts</th>
                     <th className="px-3 py-2">Countdown</th>
                     <th className="px-3 py-2">Actions</th>
@@ -864,7 +925,8 @@ export default function AdminPage() {
                 <tbody>
                   {teams.map((t) => {
                     const status = deriveStatus(t);
-                    const secs = getSecondsLeft(t.session_end);
+                    const pausedSecs = t.paused_remaining_seconds;
+                    const secs = typeof pausedSecs === "number" ? pausedSecs : getSecondsLeft(t.session_end);
                     const isWarning = secs > 0 && secs <= 300;
                     const isEnded = Boolean(t.session_end) && secs <= 0;
                     const maxAtt = t.max_attempts ?? 2;
@@ -896,26 +958,9 @@ export default function AdminPage() {
                             <span className="text-[10px] text-zinc-600">None</span>
                           )}
                         </td>
-                        <td className="px-3 py-3">
-                          <div className="flex items-center gap-2">
-                            <input
-                              value={teamFinalKeyInputs[t.id] ?? ""}
-                              onChange={(e) => setTeamFinalKeyInputs((p) => ({ ...p, [t.id]: e.target.value }))}
-                              placeholder="Per-team key"
-                              className="w-40 rounded-lg border border-zinc-800 bg-black px-2.5 py-1.5 text-xs text-white outline-none placeholder:text-zinc-600 focus:border-red-600 focus:ring-2 focus:ring-red-600/30"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => saveTeamFinalKey(t)}
-                              className="rounded-lg border border-zinc-700 bg-zinc-900/40 px-2.5 py-1.5 text-[10px] font-bold uppercase text-zinc-200 hover:bg-zinc-800/60"
-                            >
-                              Save
-                            </button>
-                          </div>
-                        </td>
                         <td className="px-3 py-3 text-zinc-300 tabular-nums">{t.attempts ?? 0} / {maxAtt}</td>
                         <td className={`px-3 py-3 font-mono font-bold tabular-nums ${isWarning ? "animate-pulse text-orange-400" : isEnded && status === "Active" ? "text-red-600" : isEnded ? "text-zinc-600" : "text-white"}`}>
-                          {void tick}{isEnded ? "00:00:00" : formatCountdown(t.session_end)}
+                          {void tick}{t.completed ? "—" : typeof pausedSecs === "number" ? formatSecondsLeft(pausedSecs) : isEnded ? "00:00:00" : formatCountdown(t.session_end)}
                         </td>
                         <td className="px-3 py-3">
                           <div className="flex flex-wrap gap-1.5">

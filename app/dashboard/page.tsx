@@ -18,6 +18,8 @@ type TeamRecord = {
   deactivated: boolean | null;
   document_url: string | null;
   final_key: string | null;
+  paused_remaining_seconds: number | null;
+  paused_at: string | null;
   session_start: string | null;
   session_end: string | null;
   attempts: number | null;
@@ -38,7 +40,7 @@ const supabase =
     : null;
 
 const TEAM_COLS =
-  "id, team_id, email, active, terminated, deactivated, document_url, final_key, session_start, session_end, attempts, completed, completion_time, max_attempts";
+  "id, team_id, email, active, terminated, deactivated, document_url, final_key, paused_remaining_seconds, paused_at, session_start, session_end, attempts, completed, completion_time, max_attempts";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -57,6 +59,14 @@ function formatCountdown(sessionEnd: string | null): string {
 function getSecondsLeft(sessionEnd: string | null): number {
   if (!sessionEnd) return 0;
   return Math.max(0, Math.floor((new Date(sessionEnd).getTime() - Date.now()) / 1000));
+}
+
+function formatSecondsLeft(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = String(Math.floor(s / 3600)).padStart(2, "0");
+  const m = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
+  const sec = String(s % 60).padStart(2, "0");
+  return `${h}:${m}:${sec}`;
 }
 
 type Status = "Standby" | "Active" | "Survived" | "Deactivated" | "Terminated";
@@ -107,10 +117,7 @@ export default function DashboardPage() {
         ? supabase.from("teams").select(TEAM_COLS).ilike("email", storedEmail).maybeSingle()
         : supabase.from("teams").select(TEAM_COLS).eq("team_id", storedTeamId ?? "").maybeSingle();
 
-      const [{ data: td, error: te }, { data: sd }] = await Promise.all([
-        teamLookup,
-        supabase.from("settings").select("final_key").eq("id", 1).maybeSingle(),
-      ]);
+      const { data: td, error: te } = await teamLookup;
 
       if (te || !td) {
         setErrorMessage(
@@ -124,8 +131,11 @@ export default function DashboardPage() {
 
       setTeam(td as TeamRecord);
       const teamKey = (td as TeamRecord).final_key;
-      setFinalKey(teamKey ?? sd?.final_key ?? null);
-      setTimeLeft(formatCountdown(td.session_end));
+      setFinalKey(teamKey ?? null);
+
+      const paused = (td as TeamRecord).deactivated && typeof (td as TeamRecord).paused_remaining_seconds === "number";
+      if (paused) setTimeLeft(formatSecondsLeft((td as TeamRecord).paused_remaining_seconds as number));
+      else setTimeLeft(formatCountdown((td as TeamRecord).session_end));
       setIsLoading(false);
     };
     load();
@@ -143,7 +153,10 @@ export default function DashboardPage() {
           const next = payload.new as TeamRecord;
           setTeam(next);
           // Keep the effective key updated if controller changes it mid-session.
-          if (next.final_key) setFinalKey(next.final_key);
+          setFinalKey(next.final_key ?? null);
+          const paused = next.deactivated && typeof next.paused_remaining_seconds === "number";
+          if (paused) setTimeLeft(formatSecondsLeft(next.paused_remaining_seconds as number));
+          else setTimeLeft(formatCountdown(next.session_end));
         }
       )
       .subscribe();
@@ -192,7 +205,9 @@ export default function DashboardPage() {
   const isSessionOver = Boolean(team?.session_end) && secondsLeft <= 0;
   const isWarning = secondsLeft > 0 && secondsLeft <= 300;
   const isClockRunning = Boolean(team?.session_end) && secondsLeft > 0;
-  const canSubmit = status === "Active" && isClockRunning && !isLocked && !isSubmitting;
+  const hasAssignedKey = Boolean(finalKey && finalKey.trim());
+  const canSubmit = status === "Active" && isClockRunning && hasAssignedKey && !isLocked && !isSubmitting;
+  const canDownloadDoc = Boolean(team?.document_url) && status === "Active" && isClockRunning;
 
   /* If terminated by admin, force logout */
   useEffect(() => {
@@ -219,9 +234,14 @@ export default function DashboardPage() {
       haptics.error();
       return;
     }
+    if (!finalKey || !finalKey.trim()) {
+      setErrorMessage("NO KEY ASSIGNED — Contact Controller.");
+      haptics.error();
+      return;
+    }
 
     const key = finalKeyInput.trim();
-    if (!key) { setErrorMessage("Enter the final survival key."); haptics.error(); return; }
+    if (!key) { setErrorMessage("Enter the key."); haptics.error(); return; }
 
     setIsSubmitting(true);
     try {
@@ -239,6 +259,12 @@ export default function DashboardPage() {
           attempts: next,
           completed: correct ? true : team.completed,
           completion_time: correct ? new Date().toISOString() : undefined,
+          // On survival, stop the clock for everyone (admin + participant)
+          active: correct ? false : undefined,
+          deactivated: correct ? false : undefined,
+          session_end: correct ? null : undefined,
+          paused_remaining_seconds: correct ? null : undefined,
+          paused_at: correct ? null : undefined,
         })
         .eq("id", team.id)
         .select(TEAM_COLS)
@@ -375,6 +401,87 @@ export default function DashboardPage() {
           <span className="sg-triangle" />
           <span className="sg-square" />
         </div>
+
+        <p style={{
+          position: "absolute",
+          bottom: "24px",
+          fontFamily: "var(--font-mono, monospace)",
+          fontSize: "10px",
+          color: "#222",
+          letterSpacing: "0.2em",
+        }}>
+          TEAM {team?.team_id ?? "—"}
+        </p>
+      </div>
+    );
+  }
+
+  /* ---------- PAUSED screen (Deactivated pauses the clock) ---------- */
+  if (status === "Deactivated" && typeof team?.paused_remaining_seconds === "number") {
+    return (
+      <div style={{
+        minHeight: "100vh",
+        background: "#050505",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        textAlign: "center",
+        padding: "24px",
+        position: "relative",
+        overflow: "hidden",
+      }}>
+        <div aria-hidden="true" style={{
+          position: "absolute",
+          top: "50%", left: "50%",
+          transform: "translate(-50%, -50%)",
+          width: "520px", height: "520px",
+          borderRadius: "50%",
+          border: "1px solid rgba(255,45,120,0.05)",
+          pointerEvents: "none",
+        }} />
+
+        <p style={{
+          fontFamily: "var(--font-mono, monospace)",
+          fontSize: "10px",
+          color: "#ff2d78",
+          letterSpacing: "0.3em",
+          textTransform: "uppercase",
+          marginBottom: "10px",
+        }}>
+          Controller Override
+        </p>
+
+        <h1 style={{
+          fontFamily: "var(--font-bebas, 'Bebas Neue', sans-serif)",
+          fontSize: "3rem",
+          letterSpacing: "0.08em",
+          lineHeight: 1,
+          marginBottom: "10px",
+          color: "#fff",
+        }}>
+          SESSION PAUSED
+        </h1>
+
+        <div style={{
+          fontFamily: "var(--font-mono, 'Share Tech Mono', monospace)",
+          fontSize: "2.2rem",
+          letterSpacing: "0.08em",
+          color: "#fff",
+          marginTop: "6px",
+          marginBottom: "14px",
+        }}>
+          {timeLeft}
+        </div>
+
+        <p style={{
+          color: "#444",
+          fontSize: "13px",
+          letterSpacing: "0.06em",
+          maxWidth: "520px",
+        }}>
+          Your clock is paused by the Controller. Downloads and submissions are disabled until the session resumes.
+        </p>
 
         <p style={{
           position: "absolute",
@@ -824,8 +931,8 @@ export default function DashboardPage() {
           )}
         </section>
 
-        {/* Assigned Document */}
-        {team?.document_url && (
+        {/* Assigned Document (available only while clock is running) */}
+        {canDownloadDoc && team?.document_url && (
           <section className="animate-slide-up-delay-2 card" style={{ padding: "20px 24px" }}>
             <div className="section-label" style={{ marginBottom: "14px" }}>
               <span className="sg-square text-pink" />
@@ -916,11 +1023,11 @@ export default function DashboardPage() {
           </section>
         )}
 
-        {/* Final Key Submission */}
+        {/* Key Submission */}
         <section className="animate-slide-up-delay-3 card" style={{ padding: "24px" }}>
           <div className="section-label" style={{ marginBottom: "16px" }}>
             <span className="sg-triangle text-pink" />
-            Final Survival Key
+            Key Submission
           </div>
 
           {isLocked ? (
@@ -955,7 +1062,7 @@ export default function DashboardPage() {
                 type="text"
                 value={finalKeyInput}
                 onChange={(e) => setFinalKeyInput(e.target.value)}
-                placeholder="Enter final survival key"
+                placeholder="Enter key"
                 disabled={!canSubmit}
                 className="input-sg"
                 autoComplete="off"
