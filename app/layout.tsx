@@ -24,6 +24,9 @@ export const metadata: Metadata = {
   title: "The Survival Room – Controlled Session Protocol",
   description:
     "A controlled survival-based escape protocol combining psychological pressure, technical thinking, and strategic decision-making.",
+  icons: {
+    icon: "/favicon.png",
+  },
 };
 
 export const viewport: Viewport = {
