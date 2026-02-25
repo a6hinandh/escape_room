@@ -173,12 +173,12 @@ export default function Home() {
         </section>
 
         {/* Rules */}
-        <section className="animate-slide-up-delay-3">
+        <section>
           <div className="section-label" style={{ marginBottom: "16px" }}>
             <span className="sg-square text-pink" />
             Protocol Rules
           </div>
-          <div className="card scan-line" style={{ padding: "20px" }}>
+          <div className="card" style={{ padding: "20px" }}>
             <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "14px" }}>
               {[
                 "Arrive at least 15 minutes before the session begins.",
@@ -197,7 +197,6 @@ export default function Home() {
                     color: "#666",
                     fontSize: "13px",
                     lineHeight: 1.6,
-                    animationDelay: `${i * 0.06}s`,
                   }}
                 >
                   <span

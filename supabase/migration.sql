@@ -23,6 +23,19 @@ alter table submissions enable row level security;
 create policy "anon_read_submissions" on submissions for select using (true);
 create policy "anon_insert_submissions" on submissions for insert with check (true);
 
+-- Allow anon delete on submissions (used by Admin "Clear Logs")
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public'
+      and tablename = 'submissions'
+      and policyname = 'anon_delete_submissions'
+  ) then
+    create policy "anon_delete_submissions" on submissions for delete using (true);
+  end if;
+end $$;
+
 -- Allow anon read/insert on broadcast
 alter table broadcast enable row level security;
 create policy "anon_read_broadcast" on broadcast for select using (true);
@@ -32,6 +45,24 @@ create policy "anon_insert_broadcast" on broadcast for insert with check (true);
 alter table settings enable row level security;
 create policy "anon_read_settings" on settings for select using (true);
 create policy "anon_update_settings" on settings for update using (true);
+
+-- Allow anon insert on settings (required for UPSERT when row doesn't exist)
+-- Constrain to the singleton row.
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public'
+      and tablename = 'settings'
+      and policyname = 'anon_insert_settings'
+  ) then
+    create policy "anon_insert_settings" on settings for insert with check (id = 1);
+  end if;
+end $$;
+
+-- Ensure the singleton settings row exists
+insert into settings (id, final_key) values (1, '')
+on conflict (id) do nothing;
 
 -- Allow anon delete on teams (for remove team feature)
 create policy "anon_delete_teams" on teams for delete using (true);
@@ -60,6 +91,9 @@ alter table teams add column if not exists deactivated boolean default false;
 
 -- 9. Add document_url column for admin-assigned documents per team
 alter table teams add column if not exists document_url text;
+
+-- 9b. Add per-team final key (overrides global settings.final_key when present)
+alter table teams add column if not exists final_key text;
 
 -- 10. Create storage bucket for team documents
 --     Run this in the Supabase SQL Editor:

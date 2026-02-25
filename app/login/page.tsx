@@ -3,6 +3,7 @@
 import { FormEvent, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
+import { haptics } from "@/lib/haptics";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -30,21 +31,25 @@ export default function LoginPage() {
     event.preventDefault();
     setErrorMessage("");
     setSuccessMessage("");
+    haptics.tap();
 
     if (!isConfigured || !supabase) {
       setErrorMessage("System configuration error. Contact Controller.");
+      haptics.error();
       return;
     }
 
     const normalizedEmail = email.trim().toLowerCase();
     if (!normalizedEmail) {
       setErrorMessage("Enter a valid identity email.");
+      haptics.error();
       return;
     }
 
     // Admins can log in purely via env allowlist (useful when DB is empty/reset).
     if (adminEmailList.includes(normalizedEmail)) {
       setSuccessMessage("Controller access granted. Entering control room...");
+      haptics.success();
       localStorage.setItem("teamEmail", normalizedEmail);
       localStorage.setItem("teamId", "admin");
       localStorage.setItem("role", "admin");
@@ -62,21 +67,25 @@ export default function LoginPage() {
 
       if (error) {
         setErrorMessage("Verification system unavailable. Try again.");
+        haptics.error();
         return;
       }
 
       if (!data) {
         setErrorMessage("ACCESS DENIED — Identity Not Authorized for Survival Protocol");
+        haptics.error();
         return;
       }
 
       // Block terminated teams from logging in
       if (data.terminated) {
         setErrorMessage("ACCESS REVOKED — Your session has been permanently terminated by the Controller.");
+        haptics.error();
         return;
       }
 
       setSuccessMessage("Identity verified. Entering protocol...");
+      haptics.success();
       const teamData = data as {
         email?: string | null;
         team_id?: string | null;

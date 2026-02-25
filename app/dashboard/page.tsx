@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { haptics } from "@/lib/haptics";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -16,6 +17,7 @@ type TeamRecord = {
   terminated: boolean | null;
   deactivated: boolean | null;
   document_url: string | null;
+  final_key: string | null;
   session_start: string | null;
   session_end: string | null;
   attempts: number | null;
@@ -36,7 +38,7 @@ const supabase =
     : null;
 
 const TEAM_COLS =
-  "id, team_id, email, active, terminated, deactivated, document_url, session_start, session_end, attempts, completed, completion_time, max_attempts";
+  "id, team_id, email, active, terminated, deactivated, document_url, final_key, session_start, session_end, attempts, completed, completion_time, max_attempts";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -121,7 +123,8 @@ export default function DashboardPage() {
       }
 
       setTeam(td as TeamRecord);
-      setFinalKey(sd?.final_key ?? null);
+      const teamKey = (td as TeamRecord).final_key;
+      setFinalKey(teamKey ?? sd?.final_key ?? null);
       setTimeLeft(formatCountdown(td.session_end));
       setIsLoading(false);
     };
@@ -136,7 +139,12 @@ export default function DashboardPage() {
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "teams", filter: `id=eq.${team.id}` },
-        (payload) => { setTeam(payload.new as TeamRecord); }
+        (payload) => {
+          const next = payload.new as TeamRecord;
+          setTeam(next);
+          // Keep the effective key updated if controller changes it mid-session.
+          if (next.final_key) setFinalKey(next.final_key);
+        }
       )
       .subscribe();
     return () => { supabase.removeChannel(ch); };
@@ -151,7 +159,10 @@ export default function DashboardPage() {
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "broadcast" }, (payload) => {
         const msg = (payload.new as { message?: string }).message;
         // Show to all logged-in participants regardless of active state
-        if (msg) setPopupMessage(msg);
+        if (msg) {
+          haptics.warning();
+          setPopupMessage(msg);
+        }
       })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
@@ -180,7 +191,8 @@ export default function DashboardPage() {
   const secondsLeft = getSecondsLeft(team?.session_end ?? null);
   const isSessionOver = Boolean(team?.session_end) && secondsLeft <= 0;
   const isWarning = secondsLeft > 0 && secondsLeft <= 300;
-  const canSubmit = status === "Active" && !isLocked && !isSubmitting;
+  const isClockRunning = Boolean(team?.session_end) && secondsLeft > 0;
+  const canSubmit = status === "Active" && isClockRunning && !isLocked && !isSubmitting;
 
   /* If terminated by admin, force logout */
   useEffect(() => {
@@ -198,12 +210,18 @@ export default function DashboardPage() {
     setErrorMessage("");
     setMessage("");
     if (!team || !supabase) return;
+    haptics.tap();
 
-    if (isLocked) { setErrorMessage("ACCESS LOCKED"); return; }
-    if (status !== "Active") { setErrorMessage("SESSION TERMINATED — Submission disabled."); return; }
+    if (isLocked) { setErrorMessage("ACCESS LOCKED"); haptics.error(); return; }
+    if (status !== "Active") { setErrorMessage("SESSION TERMINATED — Submission disabled."); haptics.error(); return; }
+    if (!team.session_end || getSecondsLeft(team.session_end) <= 0) {
+      setErrorMessage("CLOCK NOT RUNNING — Submission disabled.");
+      haptics.error();
+      return;
+    }
 
     const key = finalKeyInput.trim();
-    if (!key) { setErrorMessage("Enter the final survival key."); return; }
+    if (!key) { setErrorMessage("Enter the final survival key."); haptics.error(); return; }
 
     setIsSubmitting(true);
     try {
@@ -212,7 +230,7 @@ export default function DashboardPage() {
       const { error: subErr } = await supabase.from("submissions").insert({
         team_id: team.team_id, submitted_key: key, correct,
       });
-      if (subErr) { setErrorMessage("Submission failed. Try again."); return; }
+      if (subErr) { setErrorMessage("Submission failed. Try again."); haptics.error(); return; }
 
       const next = attemptsUsed + 1;
       const { data: updated, error: upErr } = await supabase
@@ -232,10 +250,13 @@ export default function DashboardPage() {
 
       if (correct) {
         setMessage("SURVIVED");
+        haptics.success();
       } else if (next >= MAX_ATTEMPTS) {
         setErrorMessage("ACCESS LOCKED");
+        haptics.error();
       } else {
         setErrorMessage("INVALID KEY — TRY AGAIN");
+        haptics.error();
       }
     } finally {
       setIsSubmitting(false);

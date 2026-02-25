@@ -8,6 +8,7 @@ create table teams (
   terminated boolean default false,
   deactivated boolean default false,
   document_url text,
+  final_key text,
   session_start timestamptz,
   session_end timestamptz,
   attempts int default 0,

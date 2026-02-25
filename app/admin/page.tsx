@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
+import { haptics } from "@/lib/haptics";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -15,6 +16,7 @@ type TeamAdminRecord = {
   terminated: boolean | null;
   deactivated: boolean | null;
   document_url: string | null;
+  final_key: string | null;
   session_start: string | null;
   session_end: string | null;
   attempts: number | null;
@@ -52,7 +54,7 @@ const adminEmailSet = new Set(
 );
 
 const TEAM_COLS =
-  "id, team_id, email, active, terminated, deactivated, document_url, session_start, session_end, attempts, completed, completion_time, max_attempts, is_admin";
+  "id, team_id, email, active, terminated, deactivated, document_url, final_key, session_start, session_end, attempts, completed, completion_time, max_attempts, is_admin";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -133,6 +135,8 @@ export default function AdminPage() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [defaultDurationMin, setDefaultDurationMin] = useState(30);
   const [defaultMaxAttempts, setDefaultMaxAttempts] = useState(2);
+  const [isClearingLogs, setIsClearingLogs] = useState(false);
+  const [teamFinalKeyInputs, setTeamFinalKeyInputs] = useState<Record<string, string>>({});
   const [selectedTeams, setSelectedTeams] = useState<Set<string>>(new Set());
   const [docFiles, setDocFiles] = useState<Record<string, File>>({});
   const [uploadProgress, setUploadProgress] = useState<Record<string, string>>({});
@@ -141,6 +145,8 @@ export default function AdminPage() {
 
   /* ---- toast helper ---- */
   const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
+    if (type === "success") haptics.success();
+    else haptics.error();
     const id = Date.now() + Math.random();
     setToasts((prev) => [...prev, { id, message, type }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4500);
@@ -156,6 +162,15 @@ export default function AdminPage() {
     if (error) { showToast(`Failed to load teams: ${error.message}`, "error"); return; }
     const participants = ((data ?? []) as TeamAdminRecord[]).filter((t) => !isAdminRow(t));
     setTeams(participants);
+
+    // Keep an input buffer per team for editing keys.
+    setTeamFinalKeyInputs((prev) => {
+      const next: Record<string, string> = {};
+      for (const t of participants) {
+        next[t.id] = prev[t.id] ?? (t.final_key ?? "");
+      }
+      return next;
+    });
   }, [showToast]);
 
   const loadFinalKey = useCallback(async () => {
@@ -222,6 +237,7 @@ export default function AdminPage() {
   const addTeam = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!supabase) return;
+    haptics.tap();
     const email = emailInput.trim().toLowerCase();
     const teamId = teamIdInput.trim();
     if (!email || !teamId) { showToast("Team ID and email are required.", "error"); return; }
@@ -236,6 +252,7 @@ export default function AdminPage() {
 
   const removeTeam = async (t: TeamAdminRecord) => {
     if (!supabase || !confirm(`Remove team ${t.team_id}? This is permanent.`)) return;
+    haptics.warning();
     const { error } = await supabase.from("teams").delete().eq("id", t.id);
     if (error) { showToast("Failed to remove team.", "error"); return; }
     showToast(`Team ${t.team_id} removed.`);
@@ -243,6 +260,7 @@ export default function AdminPage() {
 
   const setTeamActive = async (t: TeamAdminRecord, active: boolean) => {
     if (!supabase) return;
+    haptics.selection();
     const { error } = await supabase
       .from("teams")
       .update({ active, terminated: active ? false : t.terminated })
@@ -253,6 +271,7 @@ export default function AdminPage() {
 
   const startSession = async (t: TeamAdminRecord) => {
     if (!supabase) return;
+    haptics.tap();
     const start = new Date();
     const end = new Date(start.getTime() + defaultDurationMin * 60 * 1000);
     const { error } = await supabase.from("teams").update({
@@ -268,6 +287,7 @@ export default function AdminPage() {
 
   const stopSession = async (t: TeamAdminRecord) => {
     if (!supabase) return;
+    haptics.warning();
     const { error } = await supabase.from("teams")
       .update({ session_end: new Date().toISOString() }).eq("id", t.id);
     if (error) { showToast("Failed to stop session.", "error"); return; }
@@ -276,6 +296,8 @@ export default function AdminPage() {
 
   const forceTerminate = async (t: TeamAdminRecord) => {
     if (!supabase) return;
+    if (!confirm(`Terminate team ${t.team_id}? They will be logged out and blocked.`)) return;
+    haptics.warning();
     const { error } = await supabase.from("teams").update({
       active: false, terminated: true, deactivated: false,
       session_end: t.session_end ?? new Date().toISOString(),
@@ -286,6 +308,7 @@ export default function AdminPage() {
 
   const deactivateTeam = async (t: TeamAdminRecord) => {
     if (!supabase) return;
+    haptics.warning();
     const { error } = await supabase.from("teams").update({
       active: false, deactivated: true, terminated: false,
       session_end: t.session_end ?? new Date().toISOString(),
@@ -296,6 +319,7 @@ export default function AdminPage() {
 
   const assignDocuments = async () => {
     if (!supabase) return;
+    haptics.tap();
     const entries = Array.from(selectedTeams).filter((id) => docFiles[id]);
     if (entries.length === 0) { showToast("Select teams and choose files to upload.", "error"); return; }
     setIsSubmitting(true);
@@ -350,6 +374,7 @@ export default function AdminPage() {
   const removeDocument = async (t: TeamAdminRecord) => {
     if (!supabase) return;
     if (!confirm(`Remove document from team ${t.team_id}?`)) return;
+    haptics.warning();
     const { error } = await supabase.from("teams").update({ document_url: null }).eq("id", t.id);
     if (error) { showToast("Failed to remove document.", "error"); return; }
     showToast(`Document removed from ${t.team_id}.`);
@@ -374,17 +399,69 @@ export default function AdminPage() {
   const saveFinalKey = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!supabase) return;
+    haptics.tap();
     const key = finalKeyInput.trim();
     if (!key) { showToast("Enter a key.", "error"); return; }
-    const { error } = await supabase.from("settings").update({ final_key: key }).eq("id", 1);
-    if (error) { showToast("Failed to update final key.", "error"); return; }
-    setCurrentFinalKey(key);
-    showToast("Final survival key updated.");
+    const { data, error } = await supabase
+      .from("settings")
+      .upsert({ id: 1, final_key: key }, { onConflict: "id" })
+      .select("final_key")
+      .single();
+    if (error) {
+      showToast(`Failed to save final key: ${error.message}`, "error");
+      return;
+    }
+    const saved = data?.final_key ?? key;
+    setCurrentFinalKey(saved);
+    setFinalKeyInput(saved);
+    showToast("Final survival key saved.");
+  };
+
+  const saveTeamFinalKey = async (t: TeamAdminRecord) => {
+    if (!supabase) return;
+    haptics.tap();
+    const raw = teamFinalKeyInputs[t.id] ?? "";
+    const key = raw.trim();
+    if (!key) {
+      showToast(`Enter a key for ${t.team_id ?? "this team"}.`, "error");
+      return;
+    }
+    const { error } = await supabase.from("teams").update({ final_key: key }).eq("id", t.id);
+    if (error) {
+      showToast(`Failed to save team key: ${error.message}`, "error");
+      return;
+    }
+    showToast(`Final key saved for ${t.team_id ?? "team"}.`);
+  };
+
+  const clearSubmissionLogs = async () => {
+    if (!supabase) return;
+    if (!confirm("Clear ALL submission logs? This cannot be undone.")) return;
+
+    haptics.warning();
+
+    setIsClearingLogs(true);
+    try {
+      // Supabase requires a filter for deletes; this predicate matches all UUID rows.
+      const { error } = await supabase
+        .from("submissions")
+        .delete()
+        .neq("id", "00000000-0000-0000-0000-000000000000");
+      if (error) {
+        showToast(`Failed to clear submissions: ${error.message}`, "error");
+        return;
+      }
+      setSubmissions([]);
+      showToast("Submission logs cleared.");
+    } finally {
+      setIsClearingLogs(false);
+    }
   };
 
   const sendBroadcast = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!supabase) return;
+    haptics.tap();
     const msg = broadcastInput.trim();
     if (!msg) { showToast("Enter a broadcast message.", "error"); return; }
     const { error } = await supabase.from("broadcast").insert({ message: msg });
@@ -699,13 +776,25 @@ export default function AdminPage() {
             <h2 className="text-sm font-bold uppercase tracking-widest text-red-500">
               Submission Logs
             </h2>
-            <button
-              type="button"
-              onClick={() => { const next = !showLogs; setShowLogs(next); if (next) loadSubmissions(); }}
-              className="text-xs font-bold uppercase tracking-wider text-red-400 underline underline-offset-4 hover:text-red-300"
-            >
-              {showLogs ? "Hide" : "Show"}
-            </button>
+            <div className="flex items-center gap-3">
+              {showLogs && (
+                <button
+                  type="button"
+                  onClick={clearSubmissionLogs}
+                  disabled={isClearingLogs}
+                  className="text-xs font-bold uppercase tracking-wider text-zinc-400 underline underline-offset-4 hover:text-white disabled:opacity-50"
+                >
+                  {isClearingLogs ? "Clearing…" : "Clear Logs"}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => { const next = !showLogs; setShowLogs(next); if (next) loadSubmissions(); }}
+                className="text-xs font-bold uppercase tracking-wider text-red-400 underline underline-offset-4 hover:text-red-300"
+              >
+                {showLogs ? "Hide" : "Show"}
+              </button>
+            </div>
           </div>
           {showLogs && (
             <div className="mt-4 max-h-72 overflow-auto">
@@ -766,6 +855,7 @@ export default function AdminPage() {
                     <th className="px-3 py-2">Email</th>
                     <th className="px-3 py-2">Status</th>
                     <th className="px-3 py-2">Doc</th>
+                    <th className="px-3 py-2">Key</th>
                     <th className="px-3 py-2">Attempts</th>
                     <th className="px-3 py-2">Countdown</th>
                     <th className="px-3 py-2">Actions</th>
@@ -805,6 +895,23 @@ export default function AdminPage() {
                           ) : (
                             <span className="text-[10px] text-zinc-600">None</span>
                           )}
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-2">
+                            <input
+                              value={teamFinalKeyInputs[t.id] ?? ""}
+                              onChange={(e) => setTeamFinalKeyInputs((p) => ({ ...p, [t.id]: e.target.value }))}
+                              placeholder="Per-team key"
+                              className="w-40 rounded-lg border border-zinc-800 bg-black px-2.5 py-1.5 text-xs text-white outline-none placeholder:text-zinc-600 focus:border-red-600 focus:ring-2 focus:ring-red-600/30"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => saveTeamFinalKey(t)}
+                              className="rounded-lg border border-zinc-700 bg-zinc-900/40 px-2.5 py-1.5 text-[10px] font-bold uppercase text-zinc-200 hover:bg-zinc-800/60"
+                            >
+                              Save
+                            </button>
+                          </div>
                         </td>
                         <td className="px-3 py-3 text-zinc-300 tabular-nums">{t.attempts ?? 0} / {maxAtt}</td>
                         <td className={`px-3 py-3 font-mono font-bold tabular-nums ${isWarning ? "animate-pulse text-orange-400" : isEnded && status === "Active" ? "text-red-600" : isEnded ? "text-zinc-600" : "text-white"}`}>
